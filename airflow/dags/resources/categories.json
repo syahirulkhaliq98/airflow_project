@@ -1,0 +1,38 @@
+{
+  "publication":[{
+    "0":{
+      "source": "theStar",
+      "category": ["Nation", "Sabah & Sarawak", "Corporate News"]
+    },
+ 
+    "1":{
+      "source": "theSun",
+      "category": ["/malaysia-news/", "/business-news/"]
+    },
+ 
+    "2":{
+      "source": "Hmetro",
+      "category": ["Mutakhir", "Utama", "Bisnes"]
+    },
+ 
+    "3":{
+      "source": "newStraitsTimes",
+      "category": ["Nation", "Crime & Courts", "Corporate"]
+    },
+ 
+    "4":{
+      "source": "Bharian",
+      "category": ["Kes", "Nasional", "Korporat"]
+    },
+ 
+    "5":{
+      "source": "dailyExpress",
+      "category": ["Sabah", "National", "Business"]
+    },
+
+    "6":{
+      "source":"theedgemalaysia",
+      "category": ["Corporate", "Court", "Malaysia"]
+    }
+  }]
+}

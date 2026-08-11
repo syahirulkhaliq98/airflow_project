@@ -1,0 +1,9 @@
+apache-airflow==2.9.3
+pandas
+numpy
+gspread
+oauth2client
+openai
+google-generativeai
+psycopg2-binary
+sqlalchemy

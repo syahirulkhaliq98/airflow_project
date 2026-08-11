@@ -1,0 +1,55 @@
+# =========================
+# Python
+# =========================
+
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+
+# =========================
+# Secrets / Environment
+# =========================
+
+.env
+.env.*
+
+
+# =========================
+# Airflow
+# =========================
+
+airflow/logs/
+airflow/__pycache__/
+
+# Airflow local database
+airflow/airflow.db
+
+
+# =========================
+# Chrome
+# =========================
+
+chromedriver-linux64/
+chromedriver-linux64.zip
+google-chrome-stable_current_amd64.deb
+
+
+# =========================
+# IDE
+# =========================
+
+.vscode/
+.idea/
+
+
+# =========================
+# OS
+# =========================
+
+.DS_Store
+Thumbs.db
