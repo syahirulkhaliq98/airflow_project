@@ -78,7 +78,7 @@ excel_path = r"/home/khaliq/airflow_project/airflow/output/Merdeka"
 
 # os.makedirs(pdf_path, exist_ok=True)
 os.makedirs(excel_path, exist_ok=True)
-genai.configure(api_key="AIzaSyC0sqTzVlNr8rkG9jC_ZFCJpA_OITftKD0")
+genai.configure(api_key=os.getenv("GEMINI_API_KEY_1"))
 model = genai.GenerativeModel("gemini-2.5-flash")
 
 # Setup Chrome
