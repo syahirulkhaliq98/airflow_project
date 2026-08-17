@@ -20,7 +20,9 @@ categories = [
     "https://www.aljazeera.com/where/indonesia/"
 ]
 
-excel_path = r"/home/khaliq/airflow_project/airflow/output/Indonesia Adverse Media/Al Jazeera Indonesia"
+BASE_DIR = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = BASE_DIR / "output"
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Indonesia Adverse Media" / "Al Jazeera Indonesia")))
 # conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
 # cursor = conn.cursor()
 WINDOW_SIZE = "1024,900"

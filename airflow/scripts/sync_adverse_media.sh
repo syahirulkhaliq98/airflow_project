@@ -4,7 +4,7 @@
 #
 # Interactively copies scraper output .xlsx files from the airflow output
 # folder to the "Adverse Media Data Upload" OneDrive folder, prompting for
-# a date range and one or more sources instead of hardcoding every cp line.
+# an end date and one or more sources instead of hardcoding every cp line.
 #
 # Handles the two filename date formats seen in the output folder:
 #   "03 August 2026_05 August 2026_Source.xlsx"   (most sources)
@@ -27,26 +27,20 @@ if [ ! -d "$DEST" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Pick date range
+# 1. Pick end date
 # ---------------------------------------------------------------------------
-read -rp "Start date (YYYY-MM-DD): " START_IN
 read -rp "End date   (YYYY-MM-DD): " END_IN
 
 # Validate + build the two filename-date formats we need to match against
-if ! START_ALT=$(date -d "$START_IN" "+%d %B %Y" 2>/dev/null); then
-    echo "Could not parse start date '$START_IN'. Use YYYY-MM-DD."
-    exit 1
-fi
 if ! END_ALT=$(date -d "$END_IN" "+%d %B %Y" 2>/dev/null); then
     echo "Could not parse end date '$END_IN'. Use YYYY-MM-DD."
     exit 1
 fi
-START_ISO=$(date -d "$START_IN" "+%Y-%m-%d")
 END_ISO=$(date -d "$END_IN" "+%Y-%m-%d")
 
 echo
-echo "Looking for files dated: $START_ALT to $END_ALT"
-echo "                    (or: $START_ISO to $END_ISO)"
+echo "Looking for files dated: $END_ALT"
+echo "                    (or: $END_ISO)"
 echo
 
 # ---------------------------------------------------------------------------
@@ -99,10 +93,10 @@ COPIED=0
 for src in "${SELECTED[@]}"; do
     src_dir="$SRC_BASE/$src"
 
-    mapfile -t MATCHES < <(find "$src_dir" -maxdepth 1 -type f -iname "*.xlsx" \( -iname "*${START_ALT}*${END_ALT}*" -o -iname "*${START_ISO}*${END_ISO}*" \))
+    mapfile -t MATCHES < <(find "$src_dir" -maxdepth 1 -type f -iname "*.xlsx" \( -iname "*${END_ALT}*" -o -iname "*${END_ISO}*" \))
 
     if [ ${#MATCHES[@]} -eq 0 ]; then
-        echo "[$src] No file matched that date range automatically."
+        echo "[$src] No file matched that end date automatically."
         mapfile -t ALL_FILES < <(find "$src_dir" -maxdepth 1 -type f -iname "*.xlsx" | sort)
         if [ ${#ALL_FILES[@]} -eq 0 ]; then
             echo "[$src] No .xlsx files found at all — skipping."

@@ -68,10 +68,14 @@ class PDF(FPDF):
         self.image(screenshot_path, x=10, y=self.get_y(), w=190)
 
 # Paths
-category_path = r"/home/khaliq/airflow_project/airflow/dags/resources/categories.json"
-keyword_path = r"/home/khaliq/airflow_project/airflow/dags/resources/keywords.json"
-countries_path = r"/home/khaliq/airflow_project/airflow/dags/resources/countries.json"
-excel_path = r"/home/khaliq/airflow_project/airflow/output/Kompas"
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+OUTPUT_DIR = BASE_DIR / "output"
+
+category_path = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json")))
+keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
+countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Kompas")))
 # conn = psycopg2.connect(host="localhost", database="adverse_media", user="postgres", password="Verity@456")
 # cursor = conn.cursor()
 
@@ -563,10 +567,8 @@ else:
 # ✅ Search once for both yesterday & day_before
 found_any = False
 skip_to_next_keyword = False
-CATEGORY_LIST = ["Banten", "Bola", "Cahaya", "Cek Fakta", "Edukasi", "Global", "Health", "Hype", 
-                 "Jateng", "Jawa Barat", "Jawa Tengah", "Jawa Timur", "Jeo", "Kalimantan Barat", "Kalimantan Timur", 
-                 "Lampung", "Lestari", "Lifestyle", "Money", "News", "Otomotif", "Properti", "Regional", "Riau", 
-                 "Sulawesi Selatan", "Sumatera Barat", "Sumatera Selatan", "Sumatera Utara", "Tekno", "Travel", "Tren"]
+CATEGORY_LIST = ["Banten", "Hype", "Jateng", "Jawa Barat", "Jawa Tengah", "Jawa Timur", "Jeo", "Kalimantan Barat", "Kalimantan Timur", 
+                 "Lampung", "News", "Regional", "Riau", "Sulawesi Selatan", "Sumatera Barat", "Sumatera Selatan", "Sumatera Utara", "Tren"]
 
 for keyword in all_keywords:
     page_num = 1
@@ -696,7 +698,11 @@ for keyword in all_keywords:
                     except Exception as e:
                         print(f"❌ Content extraction failed: {e}")
                         article_text = ""
-
+                    
+                    if category in {"Regional"}:
+                        country = "Indonesia"
+                    else:
+                        country = detect_country_from_text(article_text, country_map)
 
                     # ---------- SAVE ROW ----------
                     row = {
@@ -704,7 +710,7 @@ for keyword in all_keywords:
                         "Type": "",
                         "Category": keyword,
                         "Media Source": category,
-                        "Country": detect_country_from_text(article_text, country_map),
+                        "Country": country,
                         "Date": date_formatted,
                         "Links": link,
                         "Publication": "Kompas Indonesia",

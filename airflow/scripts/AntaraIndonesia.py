@@ -67,10 +67,14 @@ class PDF(FPDF):
         self.image(screenshot_path, x=10, y=self.get_y(), w=190)
 
 # Paths
-category_path = r"/home/khaliq/airflow_project/airflow/dags/resources/categories.json"
-keyword_path = r"/home/khaliq/airflow_project/airflow/dags/resources/keywords.json"
-countries_path = r"/home/khaliq/airflow_project/airflow/dags/resources/countries.json"
-excel_path = r"/home/khaliq/airflow_project/airflow/output/Antara Indonesia"
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+OUTPUT_DIR = BASE_DIR / "output"
+
+category_path = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json")))
+keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
+countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Antara Indonesia")))
 
 # conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
 # cursor = conn.cursor()

@@ -20,10 +20,13 @@ from urllib.parse import urlparse
 
 BASE_URL = 'https://www.thestar.com.my'
 FOLDER_NAME="The Star"
-EXCEL_FILE = r"/home/khaliq/airflow_project/airflow/output/The Star"
-LOCATIONS = r"/home/khaliq/airflow_project/airflow/dags/resources/countries.json"
-KEYWORDS = r"/home/khaliq/airflow_project/airflow/dags/resources/keywords.json"
-CATEGORY_FILTER = r"/home/khaliq/airflow_project/airflow/dags/resources/categories.json"
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+OUTPUT_DIR = BASE_DIR / "output"
+EXCEL_FILE = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "The Star")))
+LOCATIONS = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
+KEYWORDS = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
+CATEGORY_FILTER = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json")))
 GOOGLE_EMAIL = "instacheck2020@gmail.com"
 GOOGLE_PASSWORD = "instacheck2010@123"
 

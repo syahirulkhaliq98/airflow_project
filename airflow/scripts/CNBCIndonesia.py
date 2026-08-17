@@ -67,11 +67,21 @@ class PDF(FPDF):
         self.add_page()
         self.image(screenshot_path, x=10, y=self.get_y(), w=190)
 
-# Paths
-category_path = r"/home/khaliq/airflow_project/airflow/dags/resources/categories.json"
-keyword_path = r"/home/khaliq/airflow_project/airflow/dags/resources/keywords.json"
-countries_path = r"/home/khaliq/airflow_project/airflow/dags/resources/countries.json"
-excel_path = r"/home/khaliq/airflow_project/airflow/output/CNBC Indonesia"
+# Paths: repo-relative by default, but overrideable with environment variables.
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+OUTPUT_DIR = BASE_DIR / "output"
+
+category_path = Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json"))
+keyword_path = Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json"))
+countries_path = Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json"))
+excel_path = Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "CNBC Indonesia"))
+
+# Convert to strings for compatibility with existing file APIs.
+category_path = str(category_path)
+keyword_path = str(keyword_path)
+countries_path = str(countries_path)
+excel_path = str(excel_path)
 
 # conn = psycopg2.connect(host="localhost", database="adverse_media", user="postgres", password="Verity@456")
 # cursor = conn.cursor()
@@ -622,6 +632,10 @@ for keyword in all_keywords:
                     ).text.strip()
                 except:
                     category = ""
+                
+                if category.lower() not in {"news"}:
+                    print(f"⏭️ Skipping category '{category}'")
+                    continue
 
                 main_tab = driver.current_window_handle
                 new_tab = None

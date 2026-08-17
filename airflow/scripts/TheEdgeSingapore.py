@@ -35,7 +35,9 @@ email= "instacheck2020@gmail.com"
 password = "instacheck2010@123"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("The_Edge_SG_scraper")
-excel_path = r"/home/khaliq/airflow_project/airflow/output/The Edge Singapore"
+BASE_DIR = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = BASE_DIR / "output"
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "The Edge Singapore")))
 
 os.makedirs(excel_path, exist_ok=True)
 

@@ -69,11 +69,16 @@ class PDF(FPDF):
         self.image(screenshot_path, x=10, y=self.get_y(), w=190)
 
 # Paths
-pdf_path = r"/home/khaliq/airflow_project/airflow/screenshots/Liputan"
-category_path = r"/home/khaliq/airflow_project/airflow/dags/resources/categories.json"
-keyword_path = r"/home/khaliq/airflow_project/airflow/dags/resources/keywords.json"
-countries_path = r"/home/khaliq/airflow_project/airflow/dags/resources/countries.json"
-excel_path = r"/home/khaliq/airflow_project/airflow/output/Liputan"
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+OUTPUT_DIR = BASE_DIR / "output"
+
+pdf_path = str(Path(os.getenv("PDF_PATH", SCREENSHOTS_DIR / "Liputan")))
+category_path = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json")))
+keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
+countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Liputan")))
 
 
 # conn = psycopg2.connect(host="localhost", database="adverse_media", user="postgres", password="Verity@456")
@@ -759,8 +764,8 @@ for keyword in all_keywords:
                 except Exception as e:
                     print("Category extraction error:", e)
                     category = ""
-		
-		if category not in CATEGORY_LIST:
+
+                if category not in CATEGORY_LIST:
                     print(f"⏭️ Skipping category '{category}'")
                     driver.close()
                     driver.switch_to.window(driver.window_handles[0])

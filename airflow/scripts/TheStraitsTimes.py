@@ -20,7 +20,9 @@ categories = [
     "https://www.straitstimes.com/singapore/courts-crime"
 ]
 
-excel_path = r'/home/khaliq/airflow_project/airflow/output/The Straits Times'
+BASE_DIR = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = BASE_DIR / "output"
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "The Straits Times")))
 #conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
 #cursor = conn.cursor()
 WINDOW_SIZE = "1024,900"
