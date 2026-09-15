@@ -13,6 +13,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 import dateparser
 import uuid
+from pathlib import Path
 
 # ---------- CONFIG ----------
 categories = [

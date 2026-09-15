@@ -17,6 +17,9 @@ from datetime import date as dt_date
 import pandas as pd
 from PIL import Image
 import re
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
+from gridfs import GridFS
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -55,6 +58,21 @@ def init_driver():
     )
     return driver
 
+MONGO_URI = "mongodb://127.0.0.1:27017/"
+MONGO_DB_NAME = "adverse_media"
+
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client[MONGO_DB_NAME]
+
+raw_articles_collection = mongo_db["raw_articles"]
+grid_fs = GridFS(mongo_db)
+
+raw_articles_collection.create_index(
+    "article_id",
+    unique=True
+)
+
+print("✅ Connected to MongoDB")
 
 def get_article_card_from_title(title_elem):
     candidate_xpaths = [
@@ -226,6 +244,9 @@ columns = [
 # backtrack_days = 0
 all_rows = []
 
+run_id = f"kompas_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+print(f"🆔 MongoDB crawler run ID: {run_id}")
 # while True:
 yesterday = (datetime.now() - timedelta(days=1)).date()
 day_before = (datetime.now() - timedelta(days=3)).date()
@@ -366,6 +387,17 @@ for keyword in all_keywords:
 
                 if link in processed_links or link in master_links or link in temp_links:
                     print(f"⏭️ Skipping duplicate: {link}")
+                    continue
+
+                article_id = hashlib.sha256(
+                    link.encode("utf-8")
+                ).hexdigest()[:16]
+
+                if raw_articles_collection.find_one(
+                    {"article_id": article_id},
+                    {"_id": 1}
+                ):
+                    print(f"⏭️ Already exists in MongoDB: {link}")
                     continue
 
                 processed_links.add(link)

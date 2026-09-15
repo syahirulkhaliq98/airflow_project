@@ -18,6 +18,7 @@ from datetime import timedelta
 import psycopg2
 from psycopg2.extras import execute_values
 import undetected_chromedriver as uc
+from pathlib import Path
 
 # ---------- CONFIG ----------
 categories = [

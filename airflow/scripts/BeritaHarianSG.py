@@ -10,6 +10,7 @@ from selenium.webdriver.common.keys import Keys
 import psycopg2
 from psycopg2.extras import execute_values
 from webdriver_manager.chrome import ChromeDriverManager
+from pathlib import Path
 
 # ---------- CONFIGURATION ----------
 url_array = [

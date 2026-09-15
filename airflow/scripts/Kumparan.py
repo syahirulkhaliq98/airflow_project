@@ -20,6 +20,9 @@ import random
 from PIL import Image
 import hashlib
 import re
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
+from gridfs import GridFS
 
 class PDF(FPDF):
     def __init__(self, title, date_published, publication, url, *args, **kwargs):
@@ -111,6 +114,26 @@ def init_driver():
 
 # first init
 driver = init_driver()
+
+# =========================
+# MONGODB CONFIG
+# =========================
+
+MONGO_URI = "mongodb://127.0.0.1:27017/"
+MONGO_DB_NAME = "adverse_media"
+
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client[MONGO_DB_NAME]
+
+raw_articles_collection = mongo_db["raw_articles"]
+grid_fs = GridFS(mongo_db)
+
+raw_articles_collection.create_index(
+    "article_id",
+    unique=True
+)
+
+print("✅ Connected to MongoDB")
 
 # Load keywords
 with open(keyword_path, "r", encoding="utf-8") as f:
@@ -614,6 +637,10 @@ columns = [
 # backtrack_days = 0
 all_rows = []
 
+run_id = f"kompas_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+print(f"🆔 MongoDB crawler run ID: {run_id}")
+
 # while True:
 yesterday = (datetime.now() - timedelta(days=1)).date()
 day_before = (datetime.now() - timedelta(days=3)).date()
@@ -718,6 +745,17 @@ for keyword in all_keywords:
                     print(f"⏭️ Skipping duplicate in master/temp: {link}")
                     continue
 
+                article_id = hashlib.sha256(
+                    link.encode("utf-8")
+                ).hexdigest()[:16]
+
+                if raw_articles_collection.find_one(
+                    {"article_id": article_id},
+                    {"_id": 1}
+                ):
+                    print(f"⏭️ Already exists in MongoDB: {link}")
+                    continue
+        
                 processed_links.add(link)
                 new_article_found = True
 
@@ -744,7 +782,9 @@ for keyword in all_keywords:
                 )
                 driver.switch_to.window(driver.window_handles[-1])
                 time.sleep(3)
+                html_content = driver.page_source
                 print(f"🔎 Opened article tab: {driver.current_url}")
+                
 
                 # ---------- DATE ----------
                 article_date, date_formatted = None, ""
@@ -816,6 +856,17 @@ for keyword in all_keywords:
                         )
                         print(f"📄 Fallback found {len(all_paragraphs)} paragraphs, extracted {len(article_text.splitlines())} lines")
 
+                    html_file_id = grid_fs.put(
+                        html_content.encode("utf-8"),
+                        filename=f"{article_id}.html",
+                        contentType="text/html",
+                        article_id=article_id,
+                        source="Kompas Indonesia",
+                        article_url=link
+                    )
+
+                    print(f"💾 HTML saved to GridFS: {article_id}.html")
+
                 except Exception as e:
                     print(f"❌ Article content extraction failed: {e}")
                     print(f"   URL: {driver.current_url}")
@@ -839,6 +890,64 @@ for keyword in all_keywords:
                 except Exception as e:
                     print(f"❌ Country detection failed: {e}")
                     country = "Unknown"
+                
+                # =========================
+                # SAVE RAW METADATA TO MONGODB
+                # =========================
+
+                mongo_document = {
+                    "article_id": article_id,
+
+                    "source": {
+                        "publication": "Kompas Indonesia",
+                        "source_type": "adverse_media"
+                    },
+
+                    "url": link,
+
+                    "crawled_at": datetime.now(),
+
+                    "crawl": {
+                        "crawler": "kumparan_scraper",
+                        "run_id": run_id,
+                        "keyword": keyword
+                    },
+
+                    "raw": {
+                        "title": title,
+                        "date": date_formatted,
+                        "category": category,
+                        "article_text": article_text
+                    },
+
+                    "html": {
+                        "file_id": html_file_id,
+                        "filename": f"{article_id}.html"
+                    },
+
+                    "processing": {
+                        "status": "pending",
+                        "processed_at": None,
+                        "error": None
+                    }
+                }
+
+                try:
+                    raw_articles_collection.insert_one(mongo_document)
+
+                    print(f"✅ Raw article saved to MongoDB: {article_id}")
+
+                except DuplicateKeyError:
+                    print(f"⏭️ Article already exists in MongoDB: {link}")
+
+                    # Remove GridFS file so we don't leave an orphan
+                    grid_fs.delete(html_file_id)
+
+                except Exception as e:
+                    print(f"❌ MongoDB insertion failed: {e}")
+
+                    # Remove GridFS file if metadata insertion fails
+                    grid_fs.delete(html_file_id)
 
                 row = {
                     "Subject": "",
