@@ -79,8 +79,7 @@ category_path = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.
 keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
 countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
 excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Kompas")))
-# conn = psycopg2.connect(host="localhost", database="adverse_media", user="postgres", password="Verity@456")
-# cursor = conn.cursor()
+
 
 os.makedirs(excel_path, exist_ok=True)
 
@@ -826,7 +825,7 @@ for keyword in all_keywords:
                         "Category": keyword,
                         "Media Source": category,
                         "Country": country,
-                        "Date": date_formatted,
+                        "Date": article_date,
                         "Links": link,
                         "Publication": "Kompas Indonesia",
                         "Title": title,
@@ -889,47 +888,81 @@ df_master.to_excel(master_file, index=False)
 driver.quit()
 print(f"Transfer complete. {len(df_temp)} rows added to {master_file}")
 
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
+
 # # ✅ Insert df_temp into PostgreSQL
-# if not df_temp.empty:
-#     insert_sql = """
-#         INSERT INTO public.raw_input_table (
-#             "pdf_uuid", "Date", "Category", "Media Source", "Country",
-#             "Links", "Publication", "Title", "Article Text",
-#             "Subject", "Status", "Type"
-#         )
-#         VALUES %s
-#         ON CONFLICT DO NOTHING;
-#     """
+if not df_temp.empty:
+    insert_sql = """
+        INSERT INTO public.raw_input_table (
+            "pdf_uuid", "Date", "Category", "Media Source", "Country",
+            "Links", "Publication", "Title", "Article Text",
+            "Subject", "Status", "Type"
+        )
+        VALUES %s
+        ON CONFLICT DO NOTHING;
+    """
     
-#     rows_to_insert = [
-#         (
-#             str(uuid.uuid4()),       # pdf_uuid
-#             row["Date"],             # Date
-#             row["Category"],         # Category
-#             row["Media Source"],     # Media Source
-#             row["Country"],          # Country
-#             row["Links"],            # Links
-#             row["Publication"],      # Publication
-#             row["Title"],            # Title
-#             row["Article Text"],     # Article Text
-#             row["Subject"],          # Subject
-#             row["Status"],           # Status
-#             row["Type"]             # Type
-#         )
-#         for _, row in df_temp.iterrows()
-#     ]
+    rows_to_insert = [
+        (
+            str(uuid.uuid4()),       # pdf_uuid
+            row["Date"],             # Date
+            row["Category"],         # Category
+            row["Media Source"],     # Media Source
+            row["Country"],          # Country
+            row["Links"],            # Links
+            row["Publication"],      # Publication
+            row["Title"],            # Title
+            row["Article Text"],     # Article Text
+            row["Subject"],          # Subject
+            row["Status"],           # Status
+            row["Type"]             # Type
+        )
+        for _, row in df_temp.iterrows()
+    ]
 
-#     execute_values(cursor, insert_sql, rows_to_insert)
-#     conn.commit()
-#     print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
-# else:
-#     print("⚠️ No new rows to insert into PostgreSQL")
+    execute_values(cursor, insert_sql, rows_to_insert)
+    conn.commit()
+    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+    print("⚠️ No new rows to insert into PostgreSQL")
 
-# # ✅ Close DB connection
-# cursor.close()
-# conn.close()
+try:
+    dedup_query = """
+    WITH ranked AS (
+        SELECT 
+            ctid,
+            ROW_NUMBER() OVER (
+                PARTITION BY "Links"
+                ORDER BY 
+                    "Status" DESC,
+                    "Date" DESC
+            ) AS rn
+        FROM raw_input_table
+    )
+    DELETE FROM raw_input_table
+    WHERE ctid IN (
+        SELECT ctid
+        FROM ranked
+        WHERE rn > 1
+    );
+    """
 
-# print("✅ Scraping completed.")
+    cursor.execute(dedup_query)
+    conn.commit()
+
+    print("🧹 Deduplication complete")
+
+except Exception as e:
+    print(f"❌ Deduplication failed: {e}")
+    conn.rollback()
+
+# ✅ Close DB connection
+finally:
+    cursor.close()
+    conn.close()
+
+print("✅ Scraping completed.")
 
 
 

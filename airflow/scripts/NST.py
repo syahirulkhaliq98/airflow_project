@@ -5,6 +5,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from urllib3.exceptions import HTTPError as Urllib3HTTPError  # ReadTimeoutError / MaxRetryError / ProtocolError
 from datetime import datetime, timedelta, timezone
 from psycopg2.extras import execute_values
 from urllib.parse import urlparse
@@ -43,6 +44,11 @@ os.makedirs(excel_path, exist_ok=True)
 
 # Setup Chrome
 # chrome_options = Options()
+PAGE_LOAD_TIMEOUT = 60      # seconds
+KEYWORD_RETRIES = 2         # extra attempts per keyword after a driver failure
+# Everything that means "the browser/driver is hung or dead"
+DRIVER_ERRORS = (TimeoutException, WebDriverException, Urllib3HTTPError, OSError)
+
 def init_driver():
     options = webdriver.ChromeOptions()
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -62,6 +68,9 @@ def init_driver():
         service=Service("/usr/local/bin/chromedriver"),
         options=options
     )
+    # Fail a hung page load after 60s (inside chromedriver) instead of letting the
+    # selenium client hit its 120s HTTP read timeout (urllib3 ReadTimeoutError).
+    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
     return driver
 
 # first init
@@ -230,7 +239,10 @@ def restart_driver():
     try:
         driver.quit()
     except:
-        pass
+        try:
+            driver.service.stop()  # make sure the old chromedriver does not linger
+        except:
+            pass
     # re-init driver here
     driver = init_driver()
 
@@ -276,15 +288,29 @@ else:
 
 # ---------------- SCRAPING ---------------- #
 for keyword in all_keywords:
-    try:
-        print(f"\n🔎 Searching for '{keyword}' between {start_date} and {end_date}")
-        search_url = f"https://www.nst.com.my/search?keywords={keyword}"
-        driver.get(search_url)
-        time.sleep(2)
-        skip_to_next_keyword = False
-    except (TimeoutException, WebDriverException) as e:
-        print(f"⚠️ Driver crashed or hung, restarting... {e}")
-        restart_driver()
+    print(f"\n🔎 Searching for '{keyword}' between {start_date} and {end_date}")
+    search_url = f"https://www.nst.com.my/search?keywords={keyword}"
+    skip_to_next_keyword = False
+    search_loaded = False
+    for attempt in range(1 + KEYWORD_RETRIES):
+        try:
+            driver.get(search_url)
+            time.sleep(2)
+            search_loaded = True
+            break
+        except DRIVER_ERRORS as e:
+            print(f"⚠️ Driver crashed or hung (attempt {attempt + 1}/{1 + KEYWORD_RETRIES}), restarting... {e}")
+            try:
+                restart_driver()
+            except Exception as restart_err:
+                print(f"⚠️ Driver restart failed: {restart_err}")
+                time.sleep(5)
+    if not search_loaded:
+        print(f"❌ Giving up on keyword '{keyword}' after {1 + KEYWORD_RETRIES} attempts")
+        try:
+            restart_driver()  # leave a fresh driver for the next keyword
+        except Exception as restart_err:
+            print(f"⚠️ Driver restart failed: {restart_err}")
         continue
     while True:
         try:
@@ -365,7 +391,7 @@ for keyword in all_keywords:
                         # Capture the original rendered HTML
                         html_content = driver.page_source
 
-                    except WebDriverException as e:
+                    except DRIVER_ERRORS as e:
                         print(f"❌ WebDriver failed opening article: {e}, restarting driver...")
                         restart_driver()
                         driver.get(search_url)
@@ -512,4 +538,78 @@ df_master.drop_duplicates(subset=["Links"], keep="first", inplace=True)
 df_master.to_excel(master_file, index=False)
 print(f"✅ Transfer complete. {len(df_temp)} rows added to {master_file}")
 
-driver.quit()
+try:
+    driver.quit()
+except Exception as e:
+    print(f"⚠️ driver.quit() failed (continuing to PostgreSQL insert): {e}")
+
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
+
+if not df_temp.empty:
+    insert_sql = """
+        INSERT INTO public.raw_input_table (
+            "pdf_uuid", "Date", "Category", "Media Source", "Country",
+            "Links", "Publication", "Title", "Article Text",
+            "Subject", "Status", "Type"
+        )
+        VALUES %s
+        ON CONFLICT DO NOTHING;
+    """
+    
+    rows_to_insert = [
+        (
+            str(uuid.uuid4()),       # pdf_uuid
+            row["Date"],             # Date
+            row["Category"],         # Category
+            row["Media Source"],     # Media Source
+            row["Country"],          # Country
+            row["Links"],            # Links
+            row["Publication"],      # Publication
+            row["Title"],            # Title
+            row["Article Text"],     # Article Text
+            row["Subject"],          # Subject
+            row["Status"],           # Status
+            row["Type"]             # Type
+        )
+        for _, row in df_temp.iterrows()
+    ]
+
+    execute_values(cursor, insert_sql, rows_to_insert)
+    conn.commit()
+    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+    print("⚠️ No new rows to insert into PostgreSQL")
+
+try:
+    dedup_query = """
+    WITH ranked AS (
+        SELECT 
+            ctid,
+            ROW_NUMBER() OVER (
+                PARTITION BY "Links"
+                ORDER BY 
+                    "Status" DESC,
+                    "Date" DESC
+            ) AS rn
+        FROM raw_input_table
+    )
+    DELETE FROM raw_input_table
+    WHERE ctid IN (
+        SELECT ctid
+        FROM ranked
+        WHERE rn > 1
+    );
+    """
+
+    cursor.execute(dedup_query)
+    conn.commit()
+
+    print("🧹 Deduplication complete")
+
+# ✅ Close DB connection
+finally:
+    cursor.close()
+    conn.close()
+
+print("✅ Scraping completed.")

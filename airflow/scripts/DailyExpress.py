@@ -29,7 +29,7 @@ countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries
 excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Daily Express")))
 url = "https://www.dailyexpress.com.my/"
 
-# conn = psycopg2.connect(host="localhost", database="adverse_media", user="postgres", password="Verity@456")
+# conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
 # cursor = conn.cursor()
 
 # os.makedirs(pdf_path, exist_ok=True)
@@ -53,6 +53,29 @@ driver = webdriver.Chrome(
     service=Service("/usr/local/bin/chromedriver"),
     options=options
 )
+PAGE_LOAD_TIMEOUT = 60      # seconds
+MAX_KEYWORD_ATTEMPTS = 3    # attempts per keyword per date before skipping it
+driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+
+
+def new_driver():
+    d = webdriver.Chrome(service=Service("/usr/local/bin/chromedriver"), options=options)
+    d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+    return d
+
+
+def open_search_form():
+    """Load the homepage and open the search form (same steps as the start of each date)."""
+    driver.get(url)
+    time.sleep(10)
+    WebDriverWait(driver, 30).until(
+        EC.element_to_be_clickable((By.LINK_TEXT, "Search"))
+    ).click()
+    WebDriverWait(driver, 30).until(
+        EC.presence_of_element_located((By.ID, "searchForm"))
+    )
+
+
 driver.get(url)
 
 class PDF(FPDF):
@@ -457,6 +480,7 @@ for current_date in date_range:
         )
 
         keyword_index = 0
+        keyword_attempts = 0
 
         while keyword_index < len(all_keywords):
             keyword = all_keywords[keyword_index]
@@ -504,6 +528,7 @@ for current_date in date_range:
                     if "No search result were found" in alert_box.text:
                         print(f"No results found for '{keyword}' on {current_date}.")
                         keyword_index += 1
+                        keyword_attempts = 0
                         continue
                 except:
                     pass
@@ -689,35 +714,53 @@ for current_date in date_range:
                 
                 if skip_to_next_keyword:
                     keyword_index += 1
+                    keyword_attempts = 0
                     continue
 
                 #Move to next keyword after processing all articles for current one
                 keyword_index += 1
+                keyword_attempts = 0
 
             except Exception as e:
-                if "localhost" in str(e) and "Read timed out" in str(e):
-                    print(f"Localhost timeout during keyword '{keyword}' on {current_date}, retrying ...")
-                    
+                # Old code: a localhost timeout retried this keyword forever, and ANY other
+                # error fell through and retried it at once with no pause or limit
+                # (12 Nov: 212x "Searching for: 'Abuse'" in 0.2 s, then a hang).
+                keyword_attempts += 1
+                print(f"Error on keyword '{keyword}' on {current_date} (attempt {keyword_attempts}/{MAX_KEYWORD_ATTEMPTS}): {e}")
+
+                # Close stray article tabs
+                try:
+                    handles = driver.window_handles
+                    if len(handles) > 1:
+                        main_tab = handles[0]
+                        for tab in [h for h in handles if h != main_tab]:
+                            try:
+                                driver.switch_to.window(tab)
+                                driver.close()
+                            except Exception as tab_err:
+                                print(f"Failed to close tab {tab}: {tab_err}")
+                        driver.switch_to.window(main_tab)
+                except Exception as tab_err:
+                    print(f"Error while cleaning up tabs: {tab_err}")
+
+                if keyword_attempts >= MAX_KEYWORD_ATTEMPTS:
+                    print(f"Skipping keyword '{keyword}' on {current_date} after {MAX_KEYWORD_ATTEMPTS} attempts")
+                    keyword_index += 1
+                    keyword_attempts = 0
+
+                time.sleep(5)
+                # Get back to a clean search form; on a hung/dead browser, restart it.
+                try:
+                    open_search_form()
+                except Exception as reload_err:
+                    print(f"Search form reload failed, restarting driver: {reload_err}")
                     try:
-                        handles = driver.window_handles
-                        if len(handles) > 1:
-                            current_tab = driver.current_window_handle
-                            main_tab = handles[0]
-                            article_tabs = [h for h in handles if h != main_tab]
-
-                            for tab in article_tabs:
-                                try:
-                                    driver.switch_to.window(tab)
-                                    driver.close()
-                                except Exception as e:
-                                    print(f"Failed to close tab {tab}: {e}")
-
-                            driver.switch_to.window(main_tab)
-                    except Exception as e:
-                        print(f"Error while cleaning up tabs: {e}")
-
-                    time.sleep(5)
-                    continue  #Retry same keyword
+                        driver.quit()
+                    except Exception:
+                        pass
+                    driver = new_driver()
+                    open_search_form()  # if this fails too, the outer handler moves to the next date
+                continue
 
     except Exception as e:
         print(f"Fatal error, retrying: {e}")
@@ -749,45 +792,80 @@ df_master.drop_duplicates(subset=["Links"], keep="first", inplace=True)
 df_master.to_excel(master_file, index=False)
 print(f"Transfer complete. {len(df_temp)} rows added to {master_file}")
 
-# ✅ Insert df_temp into PostgreSQL
-# if not df_temp.empty:
-#     insert_sql = """
-#         INSERT INTO public.raw_input_table (
-#             "pdf_uuid", "Date", "Category", "Media Source", "Country",
-#             "Links", "Publication", "Title", "Article Text",
-#             "Subject", "Status", "Type"
-#         )
-#         VALUES %s
-#         ON CONFLICT DO NOTHING;
-#     """
+#✅ Insert df_temp into PostgreSQL
+
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
+
+if not df_temp.empty:
+    insert_sql = """
+        INSERT INTO public.raw_input_table (
+            "pdf_uuid", "Date", "Category", "Media Source", "Country",
+            "Links", "Publication", "Title", "Article Text",
+            "Subject", "Status", "Type"
+        )
+        VALUES %s
+        ON CONFLICT DO NOTHING;
+    """
     
-#     rows_to_insert = [
-#         (
-#             str(uuid.uuid4()),       # pdf_uuid
-#             row["Date"],             # Date
-#             row["Category"],         # Category
-#             row["Media Source"],     # Media Source
-#             row["Country"],          # Country
-#             row["Links"],            # Links
-#             row["Publication"],      # Publication
-#             row["Title"],            # Title
-#             row["Article Text"],     # Article Text
-#             row["Subject"],          # Subject
-#             row["Status"],           # Status
-#             row["Type"],             # Type
-#         )
-#         for _, row in df_temp.iterrows()
-#     ]
-#     execute_values(cursor, insert_sql, rows_to_insert)
-#     conn.commit()
-#     print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
-# else:
-#     print("⚠️ No new rows to insert into PostgreSQL")
+    rows_to_insert = [
+        (
+            str(uuid.uuid4()),       # pdf_uuid
+            row["Date"],             # Date
+            row["Category"],         # Category
+            row["Media Source"],     # Media Source
+            row["Country"],          # Country
+            row["Links"],            # Links
+            row["Publication"],      # Publication
+            row["Title"],            # Title
+            row["Article Text"],     # Article Text
+            row["Subject"],          # Subject
+            row["Status"],           # Status
+            row["Type"],             # Type
+        )
+        for _, row in df_temp.iterrows()
+    ]
+    execute_values(cursor, insert_sql, rows_to_insert)
+    conn.commit()
+    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+    print("⚠️ No new rows to insert into PostgreSQL")
 
-#     # ✅ Close DB connection
-# cursor.close()
-# conn.close()
+try:
+    dedup_query = """
+    WITH ranked AS (
+        SELECT 
+            ctid,
+            ROW_NUMBER() OVER (
+                PARTITION BY "Links"
+                ORDER BY 
+                    "Status" DESC,
+                    "Date" DESC
+            ) AS rn
+        FROM raw_input_table
+    )
+    DELETE FROM raw_input_table
+    WHERE ctid IN (
+        SELECT ctid
+        FROM ranked
+        WHERE rn > 1
+    );
+    """
 
-# print("✅ Scraping completed.")
-# atexit.register(cleanup_driver)
+    cursor.execute(dedup_query)
+    conn.commit()
+
+    print("🧹 Deduplication complete")
+
+except Exception as e:
+    print(f"❌ Deduplication failed: {e}")
+    conn.rollback()
+
+
+    # ✅ Close DB connection
+finally:
+    cursor.close()  
+    conn.close()
+
+print("✅ Scraping completed.")
 

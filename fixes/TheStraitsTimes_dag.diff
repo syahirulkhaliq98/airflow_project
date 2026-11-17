@@ -1,0 +1,38 @@
+--- a/airflow/dags/TheStraitsTimes.py
++++ b/airflow/dags/TheStraitsTimes.py
+@@ -12,14 +12,31 @@
+     Kill all Chrome/Chromedriver processes safely for Airflow tasks.
+     
+     Works in WSL/Linux, avoids zombie tasks, and completes quickly.
++
++    Matches exact process names only. The old substring match ('chrome' in name)
++    also hit this task's own Airflow process, whose title contains "cleanup_chrome",
++    so the task SIGKILLed itself (return code -9 / zombie job).
+     """
+-    chrome_keywords = ['chrome', 'chromium', 'chromedriver', 'google-chrome']
++    chrome_names = {
++        'chrome', 'chromium', 'chromium-browser', 'chromedriver', 'google-chrome',
++        'chrome_crashpad_handler', 'chrome_crashpad',
++    }
+ 
+     try:
+-        # Collect all Chrome-related PIDs
++        # Never touch this process or anything above it (task runner, supervisor, scheduler)
++        protected_pids = {os.getpid()}
++        try:
++            protected_pids.update(p.pid for p in psutil.Process().parents())
++        except psutil.Error:
++            pass
++        current_user = psutil.Process().username()
++
++        # Collect all Chrome-related PIDs owned by this user
+         chrome_pids = [
+-            proc.info['pid'] for proc in psutil.process_iter(['pid', 'name'])
+-            if proc.info['name'] and any(k in proc.info['name'].lower() for k in chrome_keywords)
++            proc.info['pid'] for proc in psutil.process_iter(['pid', 'name', 'username'])
++            if proc.info['name'] and proc.info['name'].lower() in chrome_names
++            and proc.info['username'] == current_user
++            and proc.info['pid'] not in protected_pids
+         ]
+ 
+         # Kill processes quickly without waiting

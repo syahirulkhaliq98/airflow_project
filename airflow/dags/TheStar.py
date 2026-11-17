@@ -19,7 +19,7 @@ with DAG(
 ) as dag:
 
     run_script = BashOperator(
-        task_id='Run_Liputan',
+        task_id='Run_The_Star',
         bash_command='python /home/khaliq/airflow_project/airflow/scripts/TheStar.py'
     )
 

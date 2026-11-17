@@ -1,0 +1,586 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from datetime import datetime, timedelta, timezone
+from psycopg2.extras import execute_values
+from urllib.parse import urlparse
+from pathlib import Path
+from PIL import Image
+from fpdf import FPDF
+from webdriver_manager.chrome import ChromeDriverManager
+import psycopg2, re, json, os, time, uuid, io
+import pandas as pd
+import random
+from pathlib import Path
+# from openpyxl import load_workbook
+
+from pymongo import MongoClient
+from pymongo.errors import DuplicateKeyError
+from gridfs import GridFS
+import hashlib
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+RESOURCES_DIR = BASE_DIR / "dags" / "resources"
+SCREENSHOTS_DIR = BASE_DIR / "screenshots"
+OUTPUT_DIR = BASE_DIR / "output"
+
+category_path = str(Path(os.getenv("CATEGORY_PATH", RESOURCES_DIR / "categories.json")))
+keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json")))
+countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
+excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "NST")))
+
+url = "https://www.nst.com.my/"
+
+# conn = psycopg2.connect(host="localhost", database="postgres", user="postgres", password="P@ss1234")
+# cursor = conn.cursor()
+
+# os.makedirs(pdf_path, exist_ok=True)
+os.makedirs(excel_path, exist_ok=True)
+
+# Setup Chrome
+# chrome_options = Options()
+def init_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--incognito")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-browser-side-navigation")
+    options.add_argument("--enable-unsafe-swiftshader")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--log-level=3") 
+    options.add_argument('--ignore-certificate-errors')
+    options.add_argument('--ignore-ssl-errors')
+    options.add_argument("--start-maximized")
+    options.binary_location = "/usr/bin/google-chrome"
+    driver = webdriver.Chrome(
+        service=Service("/usr/local/bin/chromedriver"),
+        options=options
+    )
+    return driver
+
+# first init
+driver = init_driver()
+
+MONGO_URI = "mongodb://127.0.0.1:27017/"
+MONGO_DB_NAME = "adverse_media"
+
+mongo_client = MongoClient(MONGO_URI)
+mongo_db = mongo_client[MONGO_DB_NAME]
+
+raw_articles_collection = mongo_db["raw_articles"]
+grid_fs = GridFS(mongo_db)
+
+# Ensure article_id is unique
+raw_articles_collection.create_index(
+    "article_id",
+    unique=True
+)
+
+print("✅ Connected to MongoDB")
+
+# Load categories
+with open(category_path, "r", encoding="utf-8") as f:
+    publication_data = json.load(f)
+
+publication_list = publication_data["publication"][0]
+source_category_map = {
+    entry["source"]: entry["category"]
+    for entry in publication_list.values()
+}
+domain = urlparse(url).netloc
+current_source = "newStraitsTimes" if "www.nst.com.my" in domain else None
+allowed_categories = source_category_map.get(current_source, [])
+
+# Load keywords
+with open(keyword_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+languages = data["language"][0]
+english_keywords = languages.get("English", {}).get("keywords", [])
+# malay_keywords = languages.get("Malay", {}).get("keywords", [])
+all_keywords = english_keywords
+
+# Load country mapping
+with open(countries_path, "r", encoding="utf-8") as f:
+    country_map = json.load(f)
+
+class PDF(FPDF):
+    def __init__(self, title, date_published, publication, url, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.title_text = title
+        self.date_published = date_published
+        self.publication = publication
+        self.url = url
+        self.add_font('Calibri', '', 'C:/Windows/Fonts/calibri.ttf', uni=True)
+        self.add_font('Calibri', 'B', 'C:/Windows/Fonts/calibrib.ttf', uni=True)
+
+    def header(self):
+        self.image(r"C:\Users\Syasya\OneDrive - Verity Intelligence Sdn Bhd\Puteri - Intern\Adverse Media\halocheck_logo_original.png", self.w - 45, 1, 40)
+        self.set_font('Calibri', '', 11)
+        self.cell(0, 7, self.title_text, ln=True)
+        self.cell(0, 7, self.publication, ln=True)
+        self.cell(0, 7, f'Date Published: {self.date_published}', ln=True)
+
+        max_characters_per_line = 100
+        lines = self.url.split('\n')
+        for line in lines:
+            if len(line) > max_characters_per_line:
+                parts = [line[i:i + max_characters_per_line] for i in range(0, len(line), max_characters_per_line)]
+                for part in parts:
+                    self.cell(0, 7, part, ln=True, link=self.url)
+            else:
+                self.cell(0, 7, line, ln=True, link=self.url)
+
+    def footer(self):
+        self.set_x(25)
+        self.set_y(-30)
+        self.set_font('Calibri', '', 8)
+        footer_lines = [
+            'Information on this site is not an exhaustive source of information on the individual/subject matter of the search.',
+            'Any reports or articles contained herein are not reflective of any conclusive findings. Our database may not comprehensively',
+            'reflect all or subsequent developments in any matter relating to the individual/subject searched for. You are strongly advised',
+            'to conduct further inquiries for any information that post-dates the date on which the search result was last modified.'
+        ]
+        for line in footer_lines:
+            self.cell(0, 5, line, ln=True, align='C')
+        self.ln(5)
+        self.cell(0, 0, 'www.halocheck.com.my', align='L')
+        self.cell(0, 0, '  2024 HaloCheck. All rights reserved. Terms of Use | Privacy Policy', align='R')
+
+    def add_screenshot(self, screenshot_path):
+        self.add_page()
+        self.image(screenshot_path, x=10, y=self.get_y(), w=190)
+
+def detect_country_from_text(article_text):
+    text = article_text.strip()
+
+    # Convert to uppercase for uniform matching
+    uppercase_text = text.upper()
+
+    # Try matching "STATE, COUNTRY" format
+    match_comma = re.match(r"^([A-Z\s]+?),\s*([A-Z\s]+)", uppercase_text)
+    if match_comma:
+        return match_comma.group(2).strip().title()
+
+    # Try matching "STATE: ..." or "STATE - ..."
+    match_colon = re.match(r"^([A-Z\s]+?)\s*[:-]", uppercase_text)
+    if match_colon:
+        possible_state = match_colon.group(1).strip()
+
+        for country, states in country_map.items():
+            state_list_upper = [s.upper() for s in states]
+            if possible_state in state_list_upper:
+                return country.title()  # return country in title-case
+        return possible_state.title()  # fallback: return detected state as-is
+
+    return ""
+
+def normalize_malay_date(text):
+    replacements = {
+        "Januari": "January", "Februari": "February", "Mac": "March",
+        "April": "April", "Mei": "May", "Jun": "June", "Julai": "July",
+        "Ogos": "August", "Oktober": "October", "November": "November", "Disember": "December",
+        "September": "September",
+
+        # Add these abbreviations
+        "Jan": "January", "Feb": "February", "Mac": "March", "Apr": "April",
+        "Mei": "May", "Jun": "June", "Jul": "July", "Ogs": "August",
+        "Okt": "October", "Nov": "November", "Dis": "December"
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text
+
+def parse_date_flexible(date_text):
+    # Normalize spacing and AM/PM case
+    date_text = date_text.replace("  ", " ").replace("Pm", "PM").replace("pm", "PM").replace("am", "AM").replace("Am", "AM")
+    now = datetime.now()
+    lower = date_text.lower()
+    match = re.match(r"(\d+)\s*hr[s]?\s*ago", lower)
+    if match:
+        hours = int(match.group(1))
+        return now - timedelta(hours=hours)
+    
+    date_formats = [
+        "%d %B %Y @ %I:%M%p",   # 30 July 2025 @ 5:54PM
+        "%b %d, %Y @ %I:%M%p",  # Aug 19, 2025 @ 5:54PM
+        "%B %d, %Y @ %I:%M%p",  # August 19, 2025 @ 5:54PM
+        "%d %b %Y",             # 30 Jul 2025
+        "%d %B %Y",             # 30 July 2025
+        "%b %d, %Y",            # Aug 19, 2025
+        "%B %d, %Y",            # August 19, 2025
+    ]
+    
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(date_text, fmt)
+        except ValueError:
+            continue
+    
+    raise ValueError(f"❌ No matching format for date: {date_text}")
+
+def restart_driver():
+    global driver
+    try:
+        driver.quit()
+    except:
+        pass
+    # re-init driver here
+    driver = init_driver()
+
+columns = [
+    "Subject", "Type", "Category", "Media Source", "Country", "Date",
+    "Links", "Publication", "Title", "Article Text", "Status"
+]
+
+# ---------------- CONFIG ---------------- #
+
+run_id = f"nst_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+print(f"🆔 MongoDB crawler run ID: {run_id}")
+
+start_date = (datetime.now() - timedelta(days=3)).date()
+end_date   = (datetime.now() - timedelta(days=1)).date()
+
+start_date_str = start_date.strftime("%d %B %Y")
+end_date_str   = end_date.strftime("%d %B %Y")
+
+master_file = os.path.join(excel_path, "Master_NST.xlsx")
+temp_file   = os.path.join(excel_path, f"{start_date_str}_{end_date_str}_NST.xlsx")
+
+print(f"TEMP file: {temp_file}")
+
+# ---------------- LOAD MASTER + TEMP ---------------- #
+columns = ["Subject","Type","Category","Media Source","Country","Date",
+           "Links","Publication","Title","Article Text","Status"]
+
+if os.path.exists(master_file):
+    df_master = pd.read_excel(master_file)
+    master_links = set(df_master["Links"].astype(str).str.strip())
+else:
+    df_master = pd.DataFrame(columns=columns)
+    master_links = set()
+
+if os.path.exists(temp_file):
+    df_temp = pd.read_excel(temp_file)
+    temp_links = set(df_temp["Links"].astype(str).str.strip())
+else:
+    df_temp = pd.DataFrame(columns=columns)
+    temp_links = set()
+
+# ---------------- SCRAPING ---------------- #
+for keyword in all_keywords:
+    try:
+        print(f"\n🔎 Searching for '{keyword}' between {start_date} and {end_date}")
+        search_url = f"https://www.nst.com.my/search?keywords={keyword}"
+        driver.get(search_url)
+        time.sleep(2)
+        skip_to_next_keyword = False
+    except (TimeoutException, WebDriverException) as e:
+        print(f"⚠️ Driver crashed or hung, restarting... {e}")
+        restart_driver()
+        continue
+    while True:
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.search-results.pt-4 a"))
+            )
+            article_blocks = driver.find_elements(By.CSS_SELECTOR, "div.search-results.pt-4 a")
+            article_items = []
+
+            for block in article_blocks:
+                try:
+                    href = block.get_attribute("href")
+                    if not href:
+                        continue
+
+                    try:
+                        raw_date = block.find_element(By.CSS_SELECTOR, ".text-gray-400").text.strip()
+                    except:
+                        raw_date = ""
+
+                    try:
+                        category_el = block.find_element(By.XPATH, ".//*[contains(@class,'text-[var(--color-primary)]')]")
+                        category_text = category_el.text.strip().lower()
+                    except:
+                        category_text = ""
+
+                    article_items.append((href, raw_date, category_text))
+                except Exception:
+                    continue
+
+            for href, raw_date, category_text in article_items:
+                try:
+                    print("Found href:", href)
+                    full_url = href if href.startswith("http") else f"https://www.nst.com.my{href}"
+
+                    article_id = hashlib.sha256(
+                        full_url.encode("utf-8")
+                    ).hexdigest()[:16]
+
+                    matched_category = next((cat for cat in allowed_categories if cat.lower() in category_text), "")
+
+                    if not matched_category:
+                        print(f"⏭️ Skipped (category mismatch): {full_url}")
+                        continue  
+
+                    try:
+                        parsed_date = parse_date_flexible(raw_date)   # <- your function
+                    except Exception as e:
+                        print(f"⚠️ Failed to parse date '{raw_date}': {e}")
+                        continue
+
+                    date_obj = parsed_date.date()
+                    
+                    if date_obj < start_date:
+                        skip_to_next_keyword = True
+                        break
+                    if date_obj > end_date:
+                        print(f"⏩ Out of range ({date_obj}), skipping {full_url}")
+                        continue
+
+                    if full_url in master_links or full_url in temp_links:
+                        print(f"⏭️ Duplicate skipped: {full_url}")
+                        continue
+                    
+                    if raw_articles_collection.find_one(
+                        {"article_id": article_id},
+                        {"_id": 1}
+                    ):
+                        print(f"⏭️ Already exists in MongoDB: {full_url}")
+                        continue
+
+                    # --- Open article page in the current tab --- #
+                    try:
+                        driver.get(full_url)
+                        WebDriverWait(driver, 15).until(
+                            EC.presence_of_element_located((By.TAG_NAME, "body"))
+                        )
+                        # Capture the original rendered HTML
+                        html_content = driver.page_source
+
+                    except WebDriverException as e:
+                        print(f"❌ WebDriver failed opening article: {e}, restarting driver...")
+                        restart_driver()
+                        driver.get(search_url)
+                        continue
+
+                    try:
+                        title = driver.find_element(By.CSS_SELECTOR, "h1.text-xl.font-bold").text.strip()
+                        para_els = driver.find_elements(By.CSS_SELECTOR, "div.dable-content-wrapper p")
+                        article_text = "\n".join(p.text.strip() for p in para_els if p.text.strip())
+                    except Exception as e:
+                        print(f"❌ Failed to extract article content: {e}")
+                        restart_driver()
+                        driver.get(search_url)
+                        continue
+
+                    html_file_id = grid_fs.put(
+                        html_content.encode("utf-8"),
+                        filename=f"{article_id}.html",
+                        contentType="text/html",
+                        article_id=article_id,
+                        source="New Straits Times",
+                        article_url=full_url
+                    )
+
+                    print(f"💾 HTML saved to GridFS: {article_id}.html")
+
+                    # =========================
+                    # SAVE RAW METADATA TO MONGODB
+                    # =========================
+
+                    mongo_document = {
+                        "article_id": article_id,
+
+                        "source": {
+                            "publication": "New Straits Times",
+                            "source_type": "news"
+                        },
+
+                        "url": full_url,
+
+                        "crawled_at": datetime.now(timezone.utc),
+
+                        "crawl": {
+                            "crawler": "nst_crawler",
+                            "run_id": run_id,
+                            "keyword": keyword
+                        },
+
+                        "raw": {
+                            "title": title,
+                            "date": raw_date,
+                            "category": category_text,
+                            "article_text": article_text
+                        },
+
+                        "html": {
+                            "file_id": html_file_id,
+                            "filename": f"{article_id}.html"
+                        },
+
+                        "processing": {
+                            "status": "pending",
+                            "processed_at": None,
+                            "error": None
+                        }
+                    }
+                    
+
+                    try:
+                        raw_articles_collection.insert_one(mongo_document)
+
+                        print(f"✅ Raw article saved to MongoDB: {article_id}")
+
+                    except DuplicateKeyError:
+                        print(f"⏭️ Article already exists in MongoDB: {full_url}")
+
+                        # Remove the GridFS file because we don't want an orphan file
+                        grid_fs.delete(html_file_id)
+
+                    except Exception as e:
+                        print(f"❌ MongoDB insertion failed: {e}")
+
+                        # Remove GridFS file if metadata insertion fails
+                        grid_fs.delete(html_file_id)
+                    
+                    row = {
+                        "Subject": "",
+                        "Type": "",
+                        "Category": keyword,
+                        "Media Source": matched_category,
+                        "Country": detect_country_from_text(article_text),
+                        "Date": date_obj.strftime("%d %b %Y"),
+                        "Links": full_url,
+                        "Publication": "New Straits Times",
+                        "Title": title,
+                        "Article Text": article_text,
+                        "Status": "1"
+                    }
+
+                    df_row = pd.DataFrame([row], columns=columns)
+                    df_temp = pd.concat([df_temp, df_row], ignore_index=True)
+                    temp_links.add(full_url)
+
+                    df_temp.to_excel(temp_file, index=False)
+                    print(f"✅ Wrote article: {title}")
+
+                    driver.get(search_url)
+                    WebDriverWait(driver, 10).until(
+                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div.search-results.pt-4 a"))
+                    )
+
+                except Exception as e:
+                    print(f"❌ Error processing result: {e}")
+                    continue
+            
+            if skip_to_next_keyword:
+                break
+
+            # next page?
+            try:
+                # Find the pagination container
+                pagination = driver.find_element(By.CSS_SELECTOR, "nav[aria-label='Page list navigation']")
+                next_button = pagination.find_element(By.LINK_TEXT, "Next »")
+
+                # Click using JS (safer than .click() when overlays exist)
+                driver.execute_script("arguments[0].click();", next_button)
+                time.sleep(2)
+            except:
+                print("📄 No more pages.")
+                break
+
+        except Exception as e:
+            print(f"❌ Unexpected error: {e}")
+            break
+
+# ---------------- FINAL SAVE ---------------- #
+print("📂 Transferring scraped data into master file...")
+if os.path.exists(master_file):
+    df_master = pd.read_excel(master_file)
+
+df_master = pd.concat([df_master, df_temp], ignore_index=True)
+df_master.drop_duplicates(subset=["Links"], keep="first", inplace=True)
+
+df_master.to_excel(master_file, index=False)
+print(f"✅ Transfer complete. {len(df_temp)} rows added to {master_file}")
+
+driver.quit()
+
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
+
+if not df_temp.empty:
+    insert_sql = """
+        INSERT INTO public.raw_input_table (
+            "pdf_uuid", "Date", "Category", "Media Source", "Country",
+            "Links", "Publication", "Title", "Article Text",
+            "Subject", "Status", "Type"
+        )
+        VALUES %s
+        ON CONFLICT DO NOTHING;
+    """
+    
+    rows_to_insert = [
+        (
+            str(uuid.uuid4()),       # pdf_uuid
+            row["Date"],             # Date
+            row["Category"],         # Category
+            row["Media Source"],     # Media Source
+            row["Country"],          # Country
+            row["Links"],            # Links
+            row["Publication"],      # Publication
+            row["Title"],            # Title
+            row["Article Text"],     # Article Text
+            row["Subject"],          # Subject
+            row["Status"],           # Status
+            row["Type"]             # Type
+        )
+        for _, row in df_temp.iterrows()
+    ]
+
+    execute_values(cursor, insert_sql, rows_to_insert)
+    conn.commit()
+    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+    print("⚠️ No new rows to insert into PostgreSQL")
+
+try:
+    dedup_query = """
+    WITH ranked AS (
+        SELECT 
+            ctid,
+            ROW_NUMBER() OVER (
+                PARTITION BY "Links"
+                ORDER BY 
+                    "Status" DESC,
+                    "Date" DESC
+            ) AS rn
+        FROM raw_input_table
+    )
+    DELETE FROM raw_input_table
+    WHERE ctid IN (
+        SELECT ctid
+        FROM ranked
+        WHERE rn > 1
+    );
+    """
+
+    cursor.execute(dedup_query)
+    conn.commit()
+
+    print("🧹 Deduplication complete")
+
+# ✅ Close DB connection
+finally:
+    cursor.close()
+    conn.close()
+
+print("✅ Scraping completed.")

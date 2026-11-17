@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from pathlib import Path
 from fpdf import FPDF
-import psycopg2, re, json, os, time, uuid, fitz, io
+import psycopg2, re, json, os, time, uuid, fitz, io, sys
 from webdriver_manager.chrome import ChromeDriverManager
 import pandas as pd
 import random
@@ -77,8 +77,7 @@ keyword_path = str(Path(os.getenv("KEYWORD_PATH", RESOURCES_DIR / "keywords.json
 countries_path = str(Path(os.getenv("COUNTRIES_PATH", RESOURCES_DIR / "countries.json")))
 excel_path = str(Path(os.getenv("OUTPUT_PATH", OUTPUT_DIR / "Channel News Asia")))
 
-# conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
-# cursor = conn.cursor()
+
 
 os.makedirs(pdf_path, exist_ok=True)
 os.makedirs(excel_path, exist_ok=True)
@@ -190,6 +189,25 @@ def compress_screenshot_pdf(input_path, output_path, quality=35, max_width=1000)
 
     return True
 
+driver_restarted = False  # set when the browser had to be recreated; page must be reloaded
+
+def driver_alive(driver):
+    """True if the chromedriver session still answers."""
+    try:
+        driver.window_handles
+        return True
+    except Exception:
+        return False
+
+def restart_driver(driver):
+    global driver_restarted
+    try:
+        driver.quit()
+    except:
+        pass
+    driver_restarted = True
+    return init_driver()
+
 def safe_close_and_return(driver, keyword, url):
     """Safely close current tab and return to main window, restarting driver if needed."""
     try:
@@ -200,26 +218,27 @@ def safe_close_and_return(driver, keyword, url):
             raise Exception("No window handles left")
     except Exception as e:
         print(f"⚠️ Lost browser window: {e}. Restarting driver...")
-        try:
-            driver.quit()
-        except:
-            pass
-        driver = init_driver()
+        driver = restart_driver(driver)
 
-        # Relaunch search for current keyword
-        driver.get(url)
-        WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "div.search-icon-wrapper"))
-        ).click()
-        search_input = WebDriverWait(driver, 30).until(
-            EC.element_to_be_clickable((By.ID, "_3038406769_keywords"))
-        )
-        search_input.clear()
-        search_input.send_keys(keyword)
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "_3038406769_search"))
-        ).click()
-        time.sleep(3)
+        # Relaunch search for current keyword. Never let this step lose the new
+        # driver: before, an error here left `driver` pointing at the dead session,
+        # so every later keyword failed with "Connection refused" and 0 rows.
+        try:
+            driver.get(url)
+            WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "div.search-icon-wrapper"))
+            ).click()
+            search_input = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((By.ID, "_3038406769_keywords"))
+            )
+            search_input.clear()
+            search_input.send_keys(keyword)
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "_3038406769_search"))
+            ).click()
+            time.sleep(3)
+        except Exception as relaunch_err:
+            print(f"⚠️ Could not relaunch search after restart (page will be reloaded): {relaunch_err}")
     return driver
 
 
@@ -527,6 +546,8 @@ for keyword in all_keywords:
                 break
 
             for article in articles:
+                if driver_restarted:
+                    break  # remaining article elements belong to the dead browser session
                 try:
                     title_elem = article.find_element(By.CSS_SELECTOR, "h6.hit-name a")
                     title = title_elem.text.strip()
@@ -648,12 +669,29 @@ for keyword in all_keywords:
             if stop_pagination:
                 break
 
+            if driver_restarted:
+                # Browser was recreated mid-page: reload the same page with the new driver
+                driver_restarted = False
+                retries += 1
+                if retries >= 3:
+                    print(f"⏭️ Skipping keyword '{keyword}' after repeated browser restarts.")
+                    break
+                print(f"🔁 Reloading page {page_num} for '{keyword}' with the new browser")
+                continue
+
             # ✅ Proceed to next page if still within range
             page_num += 1
             time.sleep(2)
 
         except Exception as e:
             print(f"❌ Error during page {page_num} for keyword '{keyword}': {e}")
+            if not driver_alive(driver):
+                print("⚠️ Browser session is dead. Restarting driver...")
+                try:
+                    driver = restart_driver(driver)
+                except Exception as restart_err:
+                    print(f"⚠️ Driver restart failed: {restart_err}")
+            driver_restarted = False
             retries += 1
             if retries >= 2:
                 print(f"⏭️ Skipping keyword '{keyword}' after 2 failed attempts.")
@@ -672,48 +710,59 @@ df_master = pd.concat([df_master, df_temp], ignore_index=True)
 df_master.drop_duplicates(subset=["Links"], keep="first", inplace=True)
 
 df_master.to_excel(master_file, index=False)
-driver.quit()
+try:
+    driver.quit()
+except Exception as e:
+    print(f"⚠️ driver.quit() failed: {e}")
 print(f"Transfer complete. {len(df_temp)} rows added to {master_file}")
 
-# ✅ Insert df_temp into PostgreSQL
-# if not df_temp.empty:
-#    insert_sql = """
-#        INSERT INTO public.raw_input_table (
-#            "pdf_uuid", "Date", "Category", "Media Source", "Country",
-#            "Links", "Publication", "Title", "Article Text",
-#            "Subject", "Status", "Type"
-#        )
-#        VALUES %s
-#        ON CONFLICT DO NOTHING;
-#    """
-    
-#    rows_to_insert = [
-#        (
-#            str(uuid.uuid4()),       # pdf_uuid
-#            row["Date"],             # Date
-#            row["Category"],         # Category
-#            row["Media Source"],     # Media Source
-#            row["Country"],          # Country
-#            row["Links"],            # Links
-#            row["Publication"],      # Publication
-#            row["Title"],            # Title
-#            row["Article Text"],     # Article Text
-#            row["Subject"],          # Subject
-#            row["Status"],           # Status
-#            row["Type"]             # Type
-#        )
-#        for _, row in df_temp.iterrows()
-#    ]
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
 
-#    execute_values(cursor, insert_sql, rows_to_insert)
-#    conn.commit()
-#    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
-#else:
-#    print("⚠️ No new rows to insert into PostgreSQL")
+# ✅ Insert df_temp into PostgreSQL
+if not df_temp.empty:
+   insert_sql = """
+       INSERT INTO public.raw_input_table (
+           "pdf_uuid", "Date", "Category", "Media Source", "Country",
+           "Links", "Publication", "Title", "Article Text",
+           "Subject", "Status", "Type"
+       )
+       VALUES %s
+       ON CONFLICT DO NOTHING;
+   """
+    
+   rows_to_insert = [
+       (
+           str(uuid.uuid4()),       # pdf_uuid
+           row["Date"],             # Date
+           row["Category"],         # Category
+           row["Media Source"],     # Media Source
+           row["Country"],          # Country
+           row["Links"],            # Links
+           row["Publication"],      # Publication
+           row["Title"],            # Title
+           row["Article Text"],     # Article Text
+           row["Subject"],          # Subject
+           row["Status"],           # Status
+           row["Type"]             # Type
+       )
+       for _, row in df_temp.iterrows()
+   ]
+
+   execute_values(cursor, insert_sql, rows_to_insert)
+   conn.commit()
+   print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+   print("⚠️ No new rows to insert into PostgreSQL")
 
 # ✅ Close DB connection
-#cursor.close()
-#conn.close()
+cursor.close()
+conn.close()
+
+# ❗ Let Airflow mark the task FAILED instead of a silent "success" with no data
+if df_temp.empty:
+    print("❌ 0 rows scraped for this date window — failing the task so it shows up in Airflow.")
+    sys.exit(1)
 
 print("✅ Scraping completed.")
 

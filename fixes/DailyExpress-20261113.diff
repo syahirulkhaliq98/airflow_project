@@ -1,0 +1,122 @@
+--- a/airflow/scripts/DailyExpress.py
++++ b/airflow/scripts/DailyExpress.py
+@@ -53,6 +53,29 @@
+     service=Service("/usr/local/bin/chromedriver"),
+     options=options
+ )
++PAGE_LOAD_TIMEOUT = 60      # seconds
++MAX_KEYWORD_ATTEMPTS = 3    # attempts per keyword per date before skipping it
++driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
++
++
++def new_driver():
++    d = webdriver.Chrome(service=Service("/usr/local/bin/chromedriver"), options=options)
++    d.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
++    return d
++
++
++def open_search_form():
++    """Load the homepage and open the search form (same steps as the start of each date)."""
++    driver.get(url)
++    time.sleep(10)
++    WebDriverWait(driver, 30).until(
++        EC.element_to_be_clickable((By.LINK_TEXT, "Search"))
++    ).click()
++    WebDriverWait(driver, 30).until(
++        EC.presence_of_element_located((By.ID, "searchForm"))
++    )
++
++
+ driver.get(url)
+ 
+ class PDF(FPDF):
+@@ -457,6 +480,7 @@
+         )
+ 
+         keyword_index = 0
++        keyword_attempts = 0
+ 
+         while keyword_index < len(all_keywords):
+             keyword = all_keywords[keyword_index]
+@@ -504,6 +528,7 @@
+                     if "No search result were found" in alert_box.text:
+                         print(f"No results found for '{keyword}' on {current_date}.")
+                         keyword_index += 1
++                        keyword_attempts = 0
+                         continue
+                 except:
+                     pass
+@@ -689,35 +714,53 @@
+                 
+                 if skip_to_next_keyword:
+                     keyword_index += 1
++                    keyword_attempts = 0
+                     continue
+ 
+                 #Move to next keyword after processing all articles for current one
+                 keyword_index += 1
++                keyword_attempts = 0
+ 
+             except Exception as e:
+-                if "localhost" in str(e) and "Read timed out" in str(e):
+-                    print(f"Localhost timeout during keyword '{keyword}' on {current_date}, retrying ...")
+-                    
+-                    try:
+-                        handles = driver.window_handles
+-                        if len(handles) > 1:
+-                            current_tab = driver.current_window_handle
+-                            main_tab = handles[0]
+-                            article_tabs = [h for h in handles if h != main_tab]
++                # Old code: a localhost timeout retried this keyword forever, and ANY other
++                # error fell through and retried it at once with no pause or limit
++                # (12 Nov: 212x "Searching for: 'Abuse'" in 0.2 s, then a hang).
++                keyword_attempts += 1
++                print(f"Error on keyword '{keyword}' on {current_date} (attempt {keyword_attempts}/{MAX_KEYWORD_ATTEMPTS}): {e}")
+ 
+-                            for tab in article_tabs:
+-                                try:
+-                                    driver.switch_to.window(tab)
+-                                    driver.close()
+-                                except Exception as e:
+-                                    print(f"Failed to close tab {tab}: {e}")
++                # Close stray article tabs
++                try:
++                    handles = driver.window_handles
++                    if len(handles) > 1:
++                        main_tab = handles[0]
++                        for tab in [h for h in handles if h != main_tab]:
++                            try:
++                                driver.switch_to.window(tab)
++                                driver.close()
++                            except Exception as tab_err:
++                                print(f"Failed to close tab {tab}: {tab_err}")
++                        driver.switch_to.window(main_tab)
++                except Exception as tab_err:
++                    print(f"Error while cleaning up tabs: {tab_err}")
+ 
+-                            driver.switch_to.window(main_tab)
+-                    except Exception as e:
+-                        print(f"Error while cleaning up tabs: {e}")
++                if keyword_attempts >= MAX_KEYWORD_ATTEMPTS:
++                    print(f"Skipping keyword '{keyword}' on {current_date} after {MAX_KEYWORD_ATTEMPTS} attempts")
++                    keyword_index += 1
++                    keyword_attempts = 0
+ 
+-                    time.sleep(5)
+-                    continue  #Retry same keyword
++                time.sleep(5)
++                # Get back to a clean search form; on a hung/dead browser, restart it.
++                try:
++                    open_search_form()
++                except Exception as reload_err:
++                    print(f"Search form reload failed, restarting driver: {reload_err}")
++                    try:
++                        driver.quit()
++                    except Exception:
++                        pass
++                    driver = new_driver()
++                    open_search_form()  # if this fails too, the outer handler moves to the next date
++                continue
+ 
+     except Exception as e:
+         print(f"Fatal error, retrying: {e}")

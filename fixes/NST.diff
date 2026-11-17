@@ -1,0 +1,90 @@
+--- a/airflow/scripts/NST.py
++++ b/airflow/scripts/NST.py
+@@ -6,4 +6,5 @@
+ from selenium.webdriver.support import expected_conditions as EC
+ from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
++from urllib3.exceptions import HTTPError as Urllib3HTTPError  # ReadTimeoutError / MaxRetryError / ProtocolError
+ from datetime import datetime, timedelta, timezone
+ from psycopg2.extras import execute_values
+@@ -44,4 +45,9 @@
+ # Setup Chrome
+ # chrome_options = Options()
++PAGE_LOAD_TIMEOUT = 60      # seconds
++KEYWORD_RETRIES = 2         # extra attempts per keyword after a driver failure
++# Everything that means "the browser/driver is hung or dead"
++DRIVER_ERRORS = (TimeoutException, WebDriverException, Urllib3HTTPError, OSError)
++
+ def init_driver():
+     options = webdriver.ChromeOptions()
+@@ -63,4 +69,7 @@
+         options=options
+     )
++    # Fail a hung page load after 60s (inside chromedriver) instead of letting the
++    # selenium client hit its 120s HTTP read timeout (urllib3 ReadTimeoutError).
++    driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+     return driver
+ 
+@@ -231,5 +240,8 @@
+         driver.quit()
+     except:
+-        pass
++        try:
++            driver.service.stop()  # make sure the old chromedriver does not linger
++        except:
++            pass
+     # re-init driver here
+     driver = init_driver()
+@@ -277,13 +289,27 @@
+ # ---------------- SCRAPING ---------------- #
+ for keyword in all_keywords:
+-    try:
+-        print(f"\n🔎 Searching for '{keyword}' between {start_date} and {end_date}")
+-        search_url = f"https://www.nst.com.my/search?keywords={keyword}"
+-        driver.get(search_url)
+-        time.sleep(2)
+-        skip_to_next_keyword = False
+-    except (TimeoutException, WebDriverException) as e:
+-        print(f"⚠️ Driver crashed or hung, restarting... {e}")
+-        restart_driver()
++    print(f"\n🔎 Searching for '{keyword}' between {start_date} and {end_date}")
++    search_url = f"https://www.nst.com.my/search?keywords={keyword}"
++    skip_to_next_keyword = False
++    search_loaded = False
++    for attempt in range(1 + KEYWORD_RETRIES):
++        try:
++            driver.get(search_url)
++            time.sleep(2)
++            search_loaded = True
++            break
++        except DRIVER_ERRORS as e:
++            print(f"⚠️ Driver crashed or hung (attempt {attempt + 1}/{1 + KEYWORD_RETRIES}), restarting... {e}")
++            try:
++                restart_driver()
++            except Exception as restart_err:
++                print(f"⚠️ Driver restart failed: {restart_err}")
++                time.sleep(5)
++    if not search_loaded:
++        print(f"❌ Giving up on keyword '{keyword}' after {1 + KEYWORD_RETRIES} attempts")
++        try:
++            restart_driver()  # leave a fresh driver for the next keyword
++        except Exception as restart_err:
++            print(f"⚠️ Driver restart failed: {restart_err}")
+         continue
+     while True:
+@@ -366,5 +392,5 @@
+                         html_content = driver.page_source
+ 
+-                    except WebDriverException as e:
++                    except DRIVER_ERRORS as e:
+                         print(f"❌ WebDriver failed opening article: {e}, restarting driver...")
+                         restart_driver()
+@@ -513,5 +539,8 @@
+ print(f"✅ Transfer complete. {len(df_temp)} rows added to {master_file}")
+ 
+-driver.quit()
++try:
++    driver.quit()
++except Exception as e:
++    print(f"⚠️ driver.quit() failed (continuing to PostgreSQL insert): {e}")
+ 
+ conn = psycopg2.connect(host="<REDACTED>", database="<REDACTED>", user="<REDACTED>", password="<REDACTED>")

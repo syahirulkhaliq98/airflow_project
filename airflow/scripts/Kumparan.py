@@ -4,7 +4,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
 from datetime import datetime
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
@@ -682,15 +682,25 @@ for keyword in all_keywords:
     driver.get(search_url)
 
     # ---- Sort by Newest ----
-    try:
-        terbaru_btn = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[data-qa-id="newest-non-active"]'))
-        )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", terbaru_btn)
-        driver.execute_script("arguments[0].click();", terbaru_btn)
-        print("✅ Clicked Terbaru")
-    except TimeoutException:
-        print("⚠️ No 'Terbaru' button; continuing with defaults")
+    # The search page re-renders while loading, so the button can go stale between
+    # being found and being clicked. Re-locate it and retry instead of crashing.
+    for attempt in range(3):
+        try:
+            terbaru_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[data-qa-id="newest-non-active"]'))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", terbaru_btn)
+            driver.execute_script("arguments[0].click();", terbaru_btn)
+            print("✅ Clicked Terbaru")
+            break
+        except StaleElementReferenceException:
+            print(f"⚠️ 'Terbaru' button went stale (attempt {attempt + 1}/3), re-locating...")
+            time.sleep(2)
+        except TimeoutException:
+            print("⚠️ No 'Terbaru' button; continuing with defaults")
+            break
+    else:
+        print("⚠️ Could not click 'Terbaru' after 3 attempts; continuing with defaults")
 
     # ---- Collect all article cards ----
     processed_links = set()
@@ -822,6 +832,7 @@ for keyword in all_keywords:
                 print("Date OK")
             # ---------- EXTRACT CONTENT ----------
                 print("Extracting article content...")
+                html_file_id = None  # never reuse the previous article's GridFS id
                 try:
                     article_text = ""
                     print("🔎 Looking for article body")
@@ -861,7 +872,7 @@ for keyword in all_keywords:
                         filename=f"{article_id}.html",
                         contentType="text/html",
                         article_id=article_id,
-                        source="Kompas Indonesia",
+                        source="Kumparan",
                         article_url=link
                     )
 
@@ -899,7 +910,7 @@ for keyword in all_keywords:
                     "article_id": article_id,
 
                     "source": {
-                        "publication": "Kompas Indonesia",
+                        "publication": "Kumparan",
                         "source_type": "adverse_media"
                     },
 
@@ -916,7 +927,7 @@ for keyword in all_keywords:
                     "raw": {
                         "title": title,
                         "date": date_formatted,
-                        "category": category,
+                        "category": category_name,
                         "article_text": article_text
                     },
 
@@ -941,13 +952,15 @@ for keyword in all_keywords:
                     print(f"⏭️ Article already exists in MongoDB: {link}")
 
                     # Remove GridFS file so we don't leave an orphan
-                    grid_fs.delete(html_file_id)
+                    if html_file_id is not None:
+                        grid_fs.delete(html_file_id)
 
                 except Exception as e:
                     print(f"❌ MongoDB insertion failed: {e}")
 
                     # Remove GridFS file if metadata insertion fails
-                    grid_fs.delete(html_file_id)
+                    if html_file_id is not None:
+                        grid_fs.delete(html_file_id)
 
                 row = {
                     "Subject": "",
@@ -1018,47 +1031,96 @@ df_master.to_excel(master_file, index=False)
 driver.quit()
 print(f"Transfer complete. {len(df_temp)} rows added to {master_file}")
 
-# # ✅ Insert df_temp into PostgreSQL
-# if not df_temp.empty:
-#     insert_sql = """
-#         INSERT INTO public.raw_input_table (
-#             "pdf_uuid", "Date", "Category", "Media Source", "Country",
-#             "Links", "Publication", "Title", "Article Text",
-#             "Subject", "Status", "Type"
-#         )
-#         VALUES %s
-#         ON CONFLICT DO NOTHING;
-#     """
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
+
+def to_pg_date(value):
+    """Blank/NaN -> None (NULL). 'd/m/YYYY' strings -> date (avoids Postgres MDY misreading)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)) or value is pd.NaT:
+        return None
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.date()
+    if isinstance(value, dt_date):
+        return value
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "nat", "none"):
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    print(f"⚠️ Unparseable Date '{text}', inserting NULL")
+    return None
+
+# ✅ Insert df_temp into PostgreSQL
+if not df_temp.empty:
+    insert_sql = """
+        INSERT INTO public.raw_input_table (
+            "pdf_uuid", "Date", "Category", "Media Source", "Country",
+            "Links", "Publication", "Title", "Article Text",
+            "Subject", "Status", "Type"
+        )
+        VALUES %s
+        ON CONFLICT DO NOTHING;
+    """
     
-#     rows_to_insert = [
-#         (
-#             str(uuid.uuid4()),       # pdf_uuid
-#             row["Date"],             # Date
-#             row["Category"],         # Category
-#             row["Media Source"],     # Media Source
-#             row["Country"],          # Country
-#             row["Links"],            # Links
-#             row["Publication"],      # Publication
-#             row["Title"],            # Title
-#             row["Article Text"],     # Article Text
-#             row["Subject"],          # Subject
-#             row["Status"],           # Status
-#             row["Type"]             # Type
-#         )
-#         for _, row in df_temp.iterrows()
-#     ]
+    rows_to_insert = [
+        (
+            str(uuid.uuid4()),       # pdf_uuid
+            to_pg_date(row["Date"]), # Date (None instead of "" / NaN)
+            row["Category"],         # Category
+            row["Media Source"],     # Media Source
+            row["Country"],          # Country
+            row["Links"],            # Links
+            row["Publication"],      # Publication
+            row["Title"],            # Title
+            row["Article Text"],     # Article Text
+            row["Subject"],          # Subject
+            row["Status"],           # Status
+            row["Type"]             # Type
+        )
+        for _, row in df_temp.iterrows()
+    ]
 
-#     execute_values(cursor, insert_sql, rows_to_insert)
-#     conn.commit()
-#     print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
-# else:
-#     print("⚠️ No new rows to insert into PostgreSQL")
+    execute_values(cursor, insert_sql, rows_to_insert)
+    conn.commit()
+    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+    print("⚠️ No new rows to insert into PostgreSQL")
 
-# # ✅ Close DB connection
-# cursor.close()
-# conn.close()
+try:
+    dedup_query = """
+    WITH ranked AS (
+        SELECT 
+            ctid,
+            ROW_NUMBER() OVER (
+                PARTITION BY "Links"
+                ORDER BY 
+                    "Status" DESC,
+                    "Date" DESC
+            ) AS rn
+        FROM raw_input_table
+    )
+    DELETE FROM raw_input_table
+    WHERE ctid IN (
+        SELECT ctid
+        FROM ranked
+        WHERE rn > 1
+    );
+    """
 
-# print("✅ Scraping completed.")
+    cursor.execute(dedup_query)
+    conn.commit()
+
+    print("🧹 Deduplication complete")
+
+# ✅ Close DB connection
+finally:
+    cursor.close()
+    conn.close()
+
+print("✅ Scraping completed.")
 
 
 

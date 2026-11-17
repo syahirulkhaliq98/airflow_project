@@ -1,0 +1,132 @@
+--- a/airflow/scripts/ChannelNewsAsia.py
++++ b/airflow/scripts/ChannelNewsAsia.py
+@@ -12,5 +12,5 @@
+ from pathlib import Path
+ from fpdf import FPDF
+-import psycopg2, re, json, os, time, uuid, fitz, io
++import psycopg2, re, json, os, time, uuid, fitz, io, sys
+ from webdriver_manager.chrome import ChromeDriverManager
+ import pandas as pd
+@@ -190,4 +190,23 @@
+     return True
+ 
++driver_restarted = False  # set when the browser had to be recreated; page must be reloaded
++
++def driver_alive(driver):
++    """True if the chromedriver session still answers."""
++    try:
++        driver.window_handles
++        return True
++    except Exception:
++        return False
++
++def restart_driver(driver):
++    global driver_restarted
++    try:
++        driver.quit()
++    except:
++        pass
++    driver_restarted = True
++    return init_driver()
++
+ def safe_close_and_return(driver, keyword, url):
+     """Safely close current tab and return to main window, restarting driver if needed."""
+@@ -200,24 +219,25 @@
+     except Exception as e:
+         print(f"⚠️ Lost browser window: {e}. Restarting driver...")
+-        try:
+-            driver.quit()
+-        except:
+-            pass
+-        driver = init_driver()
++        driver = restart_driver(driver)
+ 
+-        # Relaunch search for current keyword
+-        driver.get(url)
+-        WebDriverWait(driver, 15).until(
+-            EC.element_to_be_clickable((By.CSS_SELECTOR, "div.search-icon-wrapper"))
+-        ).click()
+-        search_input = WebDriverWait(driver, 30).until(
+-            EC.element_to_be_clickable((By.ID, "_3038406769_keywords"))
+-        )
+-        search_input.clear()
+-        search_input.send_keys(keyword)
+-        WebDriverWait(driver, 10).until(
+-            EC.element_to_be_clickable((By.ID, "_3038406769_search"))
+-        ).click()
+-        time.sleep(3)
++        # Relaunch search for current keyword. Never let this step lose the new
++        # driver: before, an error here left `driver` pointing at the dead session,
++        # so every later keyword failed with "Connection refused" and 0 rows.
++        try:
++            driver.get(url)
++            WebDriverWait(driver, 15).until(
++                EC.element_to_be_clickable((By.CSS_SELECTOR, "div.search-icon-wrapper"))
++            ).click()
++            search_input = WebDriverWait(driver, 30).until(
++                EC.element_to_be_clickable((By.ID, "_3038406769_keywords"))
++            )
++            search_input.clear()
++            search_input.send_keys(keyword)
++            WebDriverWait(driver, 10).until(
++                EC.element_to_be_clickable((By.ID, "_3038406769_search"))
++            ).click()
++            time.sleep(3)
++        except Exception as relaunch_err:
++            print(f"⚠️ Could not relaunch search after restart (page will be reloaded): {relaunch_err}")
+     return driver
+ 
+@@ -527,4 +547,6 @@
+ 
+             for article in articles:
++                if driver_restarted:
++                    break  # remaining article elements belong to the dead browser session
+                 try:
+                     title_elem = article.find_element(By.CSS_SELECTOR, "h6.hit-name a")
+@@ -648,4 +670,14 @@
+                 break
+ 
++            if driver_restarted:
++                # Browser was recreated mid-page: reload the same page with the new driver
++                driver_restarted = False
++                retries += 1
++                if retries >= 3:
++                    print(f"⏭️ Skipping keyword '{keyword}' after repeated browser restarts.")
++                    break
++                print(f"🔁 Reloading page {page_num} for '{keyword}' with the new browser")
++                continue
++
+             # ✅ Proceed to next page if still within range
+             page_num += 1
+@@ -654,4 +686,11 @@
+         except Exception as e:
+             print(f"❌ Error during page {page_num} for keyword '{keyword}': {e}")
++            if not driver_alive(driver):
++                print("⚠️ Browser session is dead. Restarting driver...")
++                try:
++                    driver = restart_driver(driver)
++                except Exception as restart_err:
++                    print(f"⚠️ Driver restart failed: {restart_err}")
++            driver_restarted = False
+             retries += 1
+             if retries >= 2:
+@@ -672,5 +711,8 @@
+ 
+ df_master.to_excel(master_file, index=False)
+-driver.quit()
++try:
++    driver.quit()
++except Exception as e:
++    print(f"⚠️ driver.quit() failed: {e}")
+ print(f"Transfer complete. {len(df_temp)} rows added to {master_file}")
+ 
+@@ -718,4 +760,9 @@
+ conn.close()
+ 
++# ❗ Let Airflow mark the task FAILED instead of a silent "success" with no data
++if df_temp.empty:
++    print("❌ 0 rows scraped for this date window — failing the task so it shows up in Airflow.")
++    sys.exit(1)
++
+ print("✅ Scraping completed.")
+ 

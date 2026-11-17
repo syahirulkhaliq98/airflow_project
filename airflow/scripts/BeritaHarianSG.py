@@ -8,6 +8,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.keys import Keys
 import psycopg2
+import uuid
 from psycopg2.extras import execute_values
 from webdriver_manager.chrome import ChromeDriverManager
 from pathlib import Path
@@ -210,45 +211,48 @@ if os.path.exists(temp_file):
 else:
     print("⚠️ No temp file found — nothing to merge.")
 
+conn = psycopg2.connect(host="192.168.1.132", database="adverse_media", user="postgres", password="Verity@456")
+cursor = conn.cursor()
 
-#if not df_temp.empty:
-#    insert_sql = """
-#        INSERT INTO public.raw_input_table (
-#            "pdf_uuid", "Date", "Category", "Media Source", "Country",
-#            "Links", "Publication", "Title", "Article Text",
-#            "Subject", "Status", "Type"
-#        )
-#        VALUES %s
-#        ON CONFLICT DO NOTHING;
-#    """
+if not df_temp.empty:
+   insert_sql = """
+       INSERT INTO public.raw_input_table (
+           "pdf_uuid", "Date", "Category", "Media Source", "Country",
+           "Links", "Publication", "Title", "Article Text",
+           "Subject", "Status", "Type"
+       )
+       VALUES %s
+       ON CONFLICT DO NOTHING;
+   """
     
-#    rows_to_insert = [
-#        (
-#            str(uuid.uuid4()),       # pdf_uuid
-#            row["Date"],             # Date
-#            row["Category"],         # Category
-#            row["Media Source"],     # Media Source
-#            row["Country"],          # Country
-#            row["Links"],            # Links
-#            row["Publication"],      # Publication
-#            row["Title"],            # Title
-#            row["Article Text"],     # Article Text
-#            row["Subject"],          # Subject
-#            row["Status"],           # Status
-#            row["Type"]             # Type
-#        )
-#        for _, row in df_temp.iterrows()
-#    ]
+   rows_to_insert = [
+       (
+           str(uuid.uuid4()),       # pdf_uuid
+           row["Date"],             # Date
+           row["Keyword"],         # Category
+           row["Media Source"],     # Media Source
+           row["Country"],          # Country
+           row["Links"],            # Links
+           row["Publication"],      # Publication
+           row["Title"],            # Title
+           row["Article Text"],     # Article Text
+           row["Subject"],          # Subject
+           row["Status"],           # Status
+           row["Type"]             # Type
+       )
+       for _, row in df_temp.iterrows()
+   ]
 
-#    execute_values(cursor, insert_sql, rows_to_insert)
-#    conn.commit()
-#    print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
-#else:
-#    print("⚠️ No new rows to insert into PostgreSQL")
+   execute_values(cursor, insert_sql, rows_to_insert)
+   conn.commit()
+   print(f"✅ Inserted {len(rows_to_insert)} rows into PostgreSQL")
+else:
+   print("⚠️ No new rows to insert into PostgreSQL")
 
 # ✅ Close DB connection
-#cursor.close()
-#conn.close()
+
+cursor.close()
+conn.close()
 
 print("✅ Scraping completed.")
 

@@ -13,7 +13,7 @@
 set -uo pipefail
 
 SRC_BASE="/home/khaliq/airflow_project/airflow/output"
-DEST="/mnt/c/Users/Syahirul/OneDrive - Verity Intelligence Sdn Bhd/Documents/Adverse media/Adverse Media Data Upload"
+DEST="/mnt/c/Users/HCBOT/Adverse media/Export Data"
 
 if [ ! -d "$SRC_BASE" ]; then
     echo "Source base folder not found: $SRC_BASE"

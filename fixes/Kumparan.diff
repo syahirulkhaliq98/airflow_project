@@ -1,0 +1,95 @@
+--- a/airflow/scripts/Kumparan.py
++++ b/airflow/scripts/Kumparan.py
+@@ -5,5 +5,5 @@
+ from selenium.webdriver.support.ui import WebDriverWait
+ from selenium.webdriver.support import expected_conditions as EC
+-from selenium.common.exceptions import TimeoutException, NoSuchElementException
++from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException
+ from datetime import datetime
+ from psycopg2.extras import execute_values
+@@ -683,13 +683,23 @@
+ 
+     # ---- Sort by Newest ----
+-    try:
+-        terbaru_btn = WebDriverWait(driver, 10).until(
+-            EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[data-qa-id="newest-non-active"]'))
+-        )
+-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", terbaru_btn)
+-        driver.execute_script("arguments[0].click();", terbaru_btn)
+-        print("✅ Clicked Terbaru")
+-    except TimeoutException:
+-        print("⚠️ No 'Terbaru' button; continuing with defaults")
++    # The search page re-renders while loading, so the button can go stale between
++    # being found and being clicked. Re-locate it and retry instead of crashing.
++    for attempt in range(3):
++        try:
++            terbaru_btn = WebDriverWait(driver, 10).until(
++                EC.element_to_be_clickable((By.CSS_SELECTOR, 'a[data-qa-id="newest-non-active"]'))
++            )
++            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", terbaru_btn)
++            driver.execute_script("arguments[0].click();", terbaru_btn)
++            print("✅ Clicked Terbaru")
++            break
++        except StaleElementReferenceException:
++            print(f"⚠️ 'Terbaru' button went stale (attempt {attempt + 1}/3), re-locating...")
++            time.sleep(2)
++        except TimeoutException:
++            print("⚠️ No 'Terbaru' button; continuing with defaults")
++            break
++    else:
++        print("⚠️ Could not click 'Terbaru' after 3 attempts; continuing with defaults")
+ 
+     # ---- Collect all article cards ----
+@@ -823,4 +833,5 @@
+             # ---------- EXTRACT CONTENT ----------
+                 print("Extracting article content...")
++                html_file_id = None  # never reuse the previous article's GridFS id
+                 try:
+                     article_text = ""
+@@ -942,5 +953,6 @@
+ 
+                     # Remove GridFS file so we don't leave an orphan
+-                    grid_fs.delete(html_file_id)
++                    if html_file_id is not None:
++                        grid_fs.delete(html_file_id)
+ 
+                 except Exception as e:
+@@ -948,5 +960,6 @@
+ 
+                     # Remove GridFS file if metadata insertion fails
+-                    grid_fs.delete(html_file_id)
++                    if html_file_id is not None:
++                        grid_fs.delete(html_file_id)
+ 
+                 row = {
+@@ -1022,4 +1035,23 @@
+ cursor = conn.cursor()
+ 
++def to_pg_date(value):
++    """Blank/NaN -> None (NULL). 'd/m/YYYY' strings -> date (avoids Postgres MDY misreading)."""
++    if value is None or (isinstance(value, float) and pd.isna(value)) or value is pd.NaT:
++        return None
++    if isinstance(value, (datetime, pd.Timestamp)):
++        return value.date()
++    if isinstance(value, dt_date):
++        return value
++    text = str(value).strip()
++    if not text or text.lower() in ("nan", "nat", "none"):
++        return None
++    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
++        try:
++            return datetime.strptime(text, fmt).date()
++        except ValueError:
++            continue
++    print(f"⚠️ Unparseable Date '{text}', inserting NULL")
++    return None
++
+ # ✅ Insert df_temp into PostgreSQL
+ if not df_temp.empty:
+@@ -1037,5 +1069,5 @@
+         (
+             str(uuid.uuid4()),       # pdf_uuid
+-            row["Date"],             # Date
++            to_pg_date(row["Date"]), # Date (None instead of "" / NaN)
+             row["Category"],         # Category
+             row["Media Source"],     # Media Source
